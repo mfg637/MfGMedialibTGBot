@@ -1,5 +1,7 @@
+import io
 import logging
 import pathlib
+import pyimglib
 
 from telegram import Update
 from telegram.ext import filters, MessageHandler, ApplicationBuilder, CommandHandler, ContextTypes
@@ -50,7 +52,10 @@ async def safe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if content_metadata[2] is not None:
         text_response.append("Title: {}".format(content_metadata[2]))
     if content_metadata[4] is not None:
-        text_response.append("Description: {}".format(content_metadata[4]))
+        if len(content_metadata[4]) < 512:
+            text_response.append("Description: {}".format(content_metadata[4]))
+        else:
+            text_response.append("Description is too long.")
     if content_metadata[6] is not None and content_metadata[7] is not None:
         text_response.append(
             "Source: {}".format(ORIGIN_URL_TEMPLATE[content_metadata[6]].format(content_metadata[7]))
@@ -77,8 +82,43 @@ async def safe(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 image_file = representations[-1].file_path
             else:
                 file_path = representations[0].file_path
-    elif file_path.suffix in {".jpeg", ".jpg", ".webp"}:
+    elif file_path.suffix == ".webp":
         image_file = file_path
+    elif file_path.suffix in {".jpeg", ".jpg"}:
+        if pyimglib.decoders.jpeg.is_JPEG(file_path):
+            jpeg = pyimglib.decoders.jpeg.JPEGDecoder(file_path)
+            arithmetic = False
+            try:
+                if jpeg.arithmetic_coding():
+                    arithmetic = True
+            except ValueError:
+                arithmetic = True
+            if arithmetic:
+                img = pyimglib.decoders.open_image(file_path)
+                print(img)
+                img.thumbnail((1024, 1024))
+                print(img)
+                buffer = io.BytesIO()
+                img.save(buffer, "WEBP", quality=90, method=4)
+                image_file = buffer.getvalue()
+            else:
+                image_file = file_path
+    elif file_path.suffix in {".avif",}:
+        image_file = None
+    else:
+        img = pyimglib.decoders.open_image(file_path)
+        if isinstance(img, pyimglib.decoders.frames_stream.FramesStream):
+            _img = img.next_frame()
+            img.close()
+            img = _img
+        print(img)
+        img.thumbnail((1024, 1024))
+        print(img)
+        buffer = io.BytesIO()
+        img.save(buffer, "WEBP", quality=90, method=4)
+        image_file = buffer.getvalue()
+    if type(image_file) is bytes and len(image_file) == 0:
+        image_file = None
 
     text_response.append("Medialib ID: {}".format(content_id))
     medialib_connection.close()
