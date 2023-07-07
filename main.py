@@ -8,7 +8,12 @@ def main():
 
     @bot.message_handler(commands=['start', 'help'])
     def send_welcome(message):
-        bot.reply_to(message, "Howdy, how are you doing?")
+        response = (
+            "Welcome to @mfg637's personal media library.\n"
+            "Type /safe to get random SFW image\n"
+            "Other commands is not supported"
+        )
+        bot.reply_to(message, response)
 
     @bot.message_handler(commands=['safe',])
     def send_welcome(message):
@@ -43,14 +48,14 @@ def main():
 
         text_response = []
         if content_metadata[2] is not None:
-            text_response.append("*Title*: {}\n".format(content_metadata[2]))
+            text_response.append("Title: {}".format(content_metadata[2]))
         if content_metadata[4] is not None:
-            text_response.append("*Description*: {}\n".format(content_metadata[4]))
+            text_response.append("Description: {}".format(content_metadata[4]))
         if content_metadata[6] is not None and content_metadata[7] is not None:
             text_response.append(
-                "*Source*: {}\n".format(ORIGIN_PREFIX[content_metadata[6]].format(content_metadata[7]))
+                "Source: {}".format(ORIGIN_URL_TEMPLATE[content_metadata[6]].format(content_metadata[7]))
             )
-        text_response.append("*Medialib ID*: {}".format(content_id))
+        text_response.append("Medialib ID: {}".format(content_id))
         medialib_connection.close()
         bot.reply_to(message, "\n".join(text_response))
 
