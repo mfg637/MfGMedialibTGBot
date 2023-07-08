@@ -20,14 +20,23 @@ logging.basicConfig(
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    medialib_connection = medialib_db.common.make_connection()
+    user_data = medialib_db.register_user_and_get_info(
+        update.effective_user.id, "telegram", medialib_connection, username=update.effective_user.username
+    )
+    medialib_connection.close()
     print("effective_chat", update.effective_chat)
     print("effective_user", update.effective_user)
-    response = (
-        "Welcome to @mfg637's personal media library.\n"
-        "Type /safe to get random SFW image.\n"
-        "Type /tag `tag_wildcard` to search the tag\n"
-        "Other commands is not supported."
-    )
+    response = ""
+    if user_data[3] != "ban":
+        response = (
+            "Welcome to @mfg637's personal media library.\n"
+            "Type /safe to get random SFW image.\n"
+            "Type /tag `tag_wildcard` to search the tag\n"
+            "Other commands is not supported."
+        )
+    else:
+        response = "You are banned. Have a nice day."
     await context.bot.send_message(chat_id=update.effective_chat.id, text=response)
 
 async def default_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -36,7 +45,7 @@ async def default_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def query_parser(query:str):
     tag_groups = []
     query_worlds = query.split(" ")
-    current_group = {"not": False, "tags": [""], "count": 0}
+    current_group = {"not": False, "tags": [], "count": 0}
     for word in query_worlds:
         if word in {"and", "AND"}:
             if current_group["count"] > 0:
@@ -45,9 +54,10 @@ def query_parser(query:str):
         elif word in {"not", "NOT"}:
             current_group["not"] = True
         else:
-            tag_name = word.replace("_", " ")
-            current_group["tags"].append(tag_name)
-            current_group["count"] += 1
+            if len(word) > 0:
+                tag_name = word.replace("_", " ")
+                current_group["tags"].append(tag_name)
+                current_group["count"] += 1
     if current_group["count"] > 0:
         tag_groups.append(current_group)
     return tag_groups
@@ -62,6 +72,15 @@ async def safe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "furbooru": "https://furbooru.org/images/{}",
         "furaffinity": "https://www.furaffinity.net/view/{}/"
     }
+
+    medialib_connection = medialib_db.common.make_connection()
+    user_data = medialib_db.register_user_and_get_info(
+        update.effective_user.id, "telegram", medialib_connection, username=update.effective_user.username
+    )
+    if user_data[3] == "ban":
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="you are not allowed to do this request")
+        medialib_connection.close()
+        return
 
     tags_groups = [{"not": False, "tags": ["safe"], "count": 1}]
     query_string = update.message.text[6:]
@@ -83,7 +102,7 @@ async def safe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=update.effective_chat.id, text="not found any images by your query"
         )
-    medialib_connection = medialib_db.common.make_connection()
+
     content_id = raw_content_list[0][0]
     content_metadata = medialib_db.get_content_metadata_by_content_id(content_id, medialib_connection)
 
@@ -175,6 +194,14 @@ async def safe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def tag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     medialib_connection = medialib_db.common.make_connection()
+    user_data = medialib_db.register_user_and_get_info(
+        update.effective_user.id, "telegram", medialib_connection, username=update.effective_user.username
+    )
+    if user_data[3] == "ban":
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="you are not allowed to do this request")
+        medialib_connection.close()
+        return
+
     query_string = update.message.text[5:]
     response_lines = []
     if '*' in query_string:
