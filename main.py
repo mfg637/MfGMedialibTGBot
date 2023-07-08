@@ -20,6 +20,8 @@ logging.basicConfig(
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("effective_chat", update.effective_chat)
+    print("effective_user", update.effective_user)
     response = (
         "Welcome to @mfg637's personal media library.\n"
         "Type /safe to get random SFW image.\n"
@@ -65,16 +67,21 @@ async def safe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query_string = update.message.text[6:]
     tags_groups.extend(query_parser(query_string))
     print("tags_groups", tags_groups)
-    raw_content_list = medialib_db.files_by_tag_search.get_media_by_tags(
-        *tags_groups,
-        limit=1,
-        offset=0,
-        order_by=medialib_db.files_by_tag_search.ORDERING_BY.RANDOM,
-        filter_hidden=medialib_db.files_by_tag_search.HIDDEN_FILTERING.FILTER
-    )
+    try:
+        raw_content_list = medialib_db.files_by_tag_search.get_media_by_tags(
+            *tags_groups,
+            limit=1,
+            offset=0,
+            order_by=medialib_db.files_by_tag_search.ORDERING_BY.RANDOM,
+            filter_hidden=medialib_db.files_by_tag_search.HIDDEN_FILTERING.FILTER
+        )
+    except IndexError:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id, text="not found any images by your query"
+        )
     if len(raw_content_list) == 0:
         await context.bot.send_message(
-            chat_id=update.effective_chat.id, text="not founded any images by your query"
+            chat_id=update.effective_chat.id, text="not found any images by your query"
         )
     medialib_connection = medialib_db.common.make_connection()
     content_id = raw_content_list[0][0]
@@ -178,7 +185,7 @@ async def tag(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "{} → id{}: {} ({})".format(tag_alias[1], tag_info[0], tag_info[1], tag_info[2])
             )
         if len(tag_aliases) == 0:
-            response_lines.append("not founded")
+            response_lines.append("not found")
     else:
         response_lines.append("not implemented")
     medialib_connection.close()
@@ -207,12 +214,14 @@ if __name__ == '__main__':
     application = ApplicationBuilder().token(secrets.API_key).build()
 
     start_handler = CommandHandler('start', start)
+    help_handler = CommandHandler('help', start)
     echo_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), default_answer)
     safe_handler = CommandHandler('safe', safe)
     tag_handler = CommandHandler('tag', tag)
     unknown_handler = MessageHandler(filters.COMMAND, unknown)
 
     application.add_handler(start_handler)
+    application.add_handler(help_handler)
     application.add_handler(echo_handler)
     application.add_handler(safe_handler)
     application.add_handler(tag_handler)
