@@ -18,26 +18,40 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+UNKNOWN_COMMAND_TEXT_RESPONSE = "Sorry, I didn't understand that command."
+
+def get_permission_level(update, connection):
+    user_data = medialib_db.register_user_and_get_info(
+        update.effective_user.id, "telegram", connection, username=update.effective_user.username
+    )
+    permission_level = user_data[3]
+    if update.effective_chat.type != telegram.constants.ChatType.PRIVATE:
+        chat_data = medialib_db.register_channel_and_get_info(
+            update.effective_chat.id, update.effective_chat.title, connection
+        )
+        permission_level = chat_data[2]
+    return permission_level
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     medialib_connection = medialib_db.common.make_connection()
-    user_data = medialib_db.register_user_and_get_info(
-        update.effective_user.id, "telegram", medialib_connection, username=update.effective_user.username
-    )
+    permission_level = get_permission_level(update, medialib_connection)
     medialib_connection.close()
     print("effective_chat", update.effective_chat)
     print("effective_user", update.effective_user)
-    response = ""
-    if user_data[3] != "ban":
-        response = (
-            "Welcome to @mfg637's personal media library.\n"
-            "Type /safe to get random SFW image.\n"
-            "Type /tag `tag_wildcard` to search the tag\n"
-            "Other commands is not supported."
-        )
+    response_lines = []
+    if permission_level != "ban":
+        response_lines.append("Welcome to @mfg637's personal media library.")
+        response_lines.append("Type /safe to get random SFW image.")
+        response_lines.append("Type /tag `tag_wildcard` to search the tag")
+        if permission_level in {'suggestive', 'nsfw', 'gay', 'ultimate'}:
+            response_lines.append("Type /suggestive to get suggestive image.")
+        if permission_level in {'nsfw', 'gay', 'ultimate'}:
+            response_lines.append("Type /nsfw to get some NSFW image.")
+            response_lines.append("Type /explicit to get explicit rated image.")
+        response_lines.append("Other commands is not supported.")
     else:
-        response = "You are banned. Have a nice day."
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=response)
+        response_lines.append("You are banned. Have a nice day.")
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="\n".join(response_lines))
 
 async def default_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_chat.id, text="I'm not a chatbot!")
@@ -56,53 +70,37 @@ def query_parser(query:str):
         else:
             if len(word) > 0:
                 tag_name = word.replace("_", " ")
+                if tag_name.isdigit():
+                    tag_name = int(tag_name)
                 current_group["tags"].append(tag_name)
                 current_group["count"] += 1
     if current_group["count"] > 0:
         tag_groups.append(current_group)
     return tag_groups
 
+def filter_pride_tags():
+    ORIENTATION_WORDS = ["bisexual", "gay", "futa", "intersex", "lesbian", "transgender"]
+    pride_tags = []
+    for orientation in ORIENTATION_WORDS:
+        pride_tags.append({"not": True, "tags": [orientation], "count": 1})
+    return pride_tags
 
-async def safe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ORIGIN_URL_TEMPLATE = {
-        "derpibooru": "https://derpibooru.org/images/{}",
-        "ponybooru": "https://ponybooru.org/images/{}",
-        "twibooru": "https://twibooru.org/{}",
-        "e621": "https://e621.net/posts/{}",
-        "furbooru": "https://furbooru.org/images/{}",
-        "furaffinity": "https://www.furaffinity.net/view/{}/"
-    }
+def filter_bad_tags():
+    bad_tags = []
+    for bad_word in secrets.bad_words:
+        bad_tags.append({"not": True, "tags": [bad_word], "count": 1})
+    return bad_tags
 
-    medialib_connection = medialib_db.common.make_connection()
-    user_data = medialib_db.register_user_and_get_info(
-        update.effective_user.id, "telegram", medialib_connection, username=update.effective_user.username
-    )
-    if user_data[3] == "ban":
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="you are not allowed to do this request")
-        medialib_connection.close()
-        return
+ORIGIN_URL_TEMPLATE = {
+    "derpibooru": "https://derpibooru.org/images/{}",
+    "ponybooru": "https://ponybooru.org/images/{}",
+    "twibooru": "https://twibooru.org/{}",
+    "e621": "https://e621.net/posts/{}",
+    "furbooru": "https://furbooru.org/images/{}",
+    "furaffinity": "https://www.furaffinity.net/view/{}/"
+}
 
-    tags_groups = [{"not": False, "tags": ["safe"], "count": 1}]
-    query_string = update.message.text[6:]
-    tags_groups.extend(query_parser(query_string))
-    print("tags_groups", tags_groups)
-    try:
-        raw_content_list = medialib_db.files_by_tag_search.get_media_by_tags(
-            *tags_groups,
-            limit=1,
-            offset=0,
-            order_by=medialib_db.files_by_tag_search.ORDERING_BY.RANDOM,
-            filter_hidden=medialib_db.files_by_tag_search.HIDDEN_FILTERING.FILTER
-        )
-    except IndexError:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id, text="not found any images by your query"
-        )
-    if len(raw_content_list) == 0:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id, text="not found any images by your query"
-        )
-
+def get_image(context, update, raw_content_list, medialib_connection):
     content_id = raw_content_list[0][0]
     content_metadata = medialib_db.get_content_metadata_by_content_id(content_id, medialib_connection)
 
@@ -179,6 +177,41 @@ async def safe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image_file = None
 
     text_response.append("Medialib ID: {}".format(content_id))
+
+    return image_file, text_response
+
+async def safe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    medialib_connection = medialib_db.common.make_connection()
+    permission_level = get_permission_level(update, medialib_connection)
+    if permission_level == "ban":
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="you are not allowed to do this request")
+        medialib_connection.close()
+        return
+
+    tags_groups = [{"not": False, "tags": ["safe"], "count": 1}]
+    query_string = update.message.text[6:]
+    tags_groups.extend(query_parser(query_string))
+    print("tags_groups", tags_groups)
+
+    try:
+        raw_content_list = medialib_db.files_by_tag_search.get_media_by_tags(
+            *tags_groups,
+            limit=1,
+            offset=0,
+            order_by=medialib_db.files_by_tag_search.ORDERING_BY.RANDOM,
+            filter_hidden=medialib_db.files_by_tag_search.HIDDEN_FILTERING.FILTER
+        )
+    except IndexError:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id, text="not found any images by your query"
+        )
+    if len(raw_content_list) == 0:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id, text="not found any images by your query"
+        )
+
+    image_file, text_response = get_image(context, update, raw_content_list, medialib_connection)
+
     medialib_connection.close()
 
     if image_file is not None:
@@ -192,12 +225,175 @@ async def safe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=update.effective_chat.id, text="\n".join(text_response))
 
 
+async def suggestive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    medialib_connection = medialib_db.common.make_connection()
+    permission_level = get_permission_level(update, medialib_connection)
+    print("permission level", permission_level)
+    if permission_level not in {'suggestive', 'nsfw', 'gay', 'ultimate'}:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=UNKNOWN_COMMAND_TEXT_RESPONSE)
+        medialib_connection.close()
+        return
+
+    tags_groups = [{"not": False, "tags": ["suggestive"], "count": 1}]
+    tags_groups.extend(filter_bad_tags())
+    if permission_level not in {'ultimate', 'gay'}:
+        tags_groups.extend(filter_pride_tags())
+    query_string = update.message.text[12:]
+    tags_groups.extend(query_parser(query_string))
+    print("tags_groups", tags_groups)
+
+    try:
+        raw_content_list = medialib_db.files_by_tag_search.get_media_by_tags(
+            *tags_groups,
+            limit=1,
+            offset=0,
+            order_by=medialib_db.files_by_tag_search.ORDERING_BY.RANDOM,
+            filter_hidden=medialib_db.files_by_tag_search.HIDDEN_FILTERING.FILTER
+        )
+    except IndexError:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id, text="not found any images by your query"
+        )
+    if len(raw_content_list) == 0:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id, text="not found any images by your query"
+        )
+
+    image_file, text_response = get_image(context, update, raw_content_list, medialib_connection)
+
+    medialib_connection.close()
+
+    if image_file is not None:
+        try:
+            spoilered = True
+            if update.effective_chat.type == telegram.constants.ChatType.PRIVATE:
+                spoilered = False
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id,
+                photo=image_file,
+                caption="\n".join(text_response),
+                has_spoiler=spoilered
+            )
+        except telegram.error.BadRequest:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="\n".join(text_response))
+    else:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="\n".join(text_response))
+
+
+async def nsfw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    medialib_connection = medialib_db.common.make_connection()
+    permission_level = get_permission_level(update, medialib_connection)
+    print("permission level", permission_level)
+    if permission_level not in {'nsfw', 'gay', 'ultimate'}:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=UNKNOWN_COMMAND_TEXT_RESPONSE)
+        medialib_connection.close()
+        return
+
+    tags_groups = [{"not": True, "tags": ["safe"], "count": 1}]
+    tags_groups.extend(filter_bad_tags())
+    if permission_level not in {'ultimate', 'gay'}:
+        tags_groups.extend(filter_pride_tags())
+    query_string = update.message.text[6:]
+    tags_groups.extend(query_parser(query_string))
+    print("tags_groups", tags_groups)
+
+    try:
+        raw_content_list = medialib_db.files_by_tag_search.get_media_by_tags(
+            *tags_groups,
+            limit=1,
+            offset=0,
+            order_by=medialib_db.files_by_tag_search.ORDERING_BY.RANDOM,
+            filter_hidden=medialib_db.files_by_tag_search.HIDDEN_FILTERING.FILTER
+        )
+    except IndexError:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id, text="not found any images by your query"
+        )
+    if len(raw_content_list) == 0:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id, text="not found any images by your query"
+        )
+
+    image_file, text_response = get_image(context, update, raw_content_list, medialib_connection)
+
+    medialib_connection.close()
+
+    if image_file is not None:
+        try:
+            spoilered = True
+            if update.effective_chat.type == telegram.constants.ChatType.PRIVATE:
+                spoilered = False
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id,
+                photo=image_file,
+                caption="\n".join(text_response),
+                has_spoiler=spoilered
+            )
+        except telegram.error.BadRequest:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="\n".join(text_response))
+    else:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="\n".join(text_response))
+
+
+async def explicit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    medialib_connection = medialib_db.common.make_connection()
+    permission_level = get_permission_level(update, medialib_connection)
+    print("permission level", permission_level)
+    if permission_level not in {'nsfw', 'gay', 'ultimate'}:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=UNKNOWN_COMMAND_TEXT_RESPONSE)
+        medialib_connection.close()
+        return
+
+    tags_groups = [{"not": False, "tags": ["explicit"], "count": 1}]
+    tags_groups.extend(filter_bad_tags())
+    if permission_level not in {'ultimate', 'gay'}:
+        tags_groups.extend(filter_pride_tags())
+    query_string = update.message.text[10:]
+    tags_groups.extend(query_parser(query_string))
+    print("tags_groups", tags_groups)
+
+    try:
+        raw_content_list = medialib_db.files_by_tag_search.get_media_by_tags(
+            *tags_groups,
+            limit=1,
+            offset=0,
+            order_by=medialib_db.files_by_tag_search.ORDERING_BY.RANDOM,
+            filter_hidden=medialib_db.files_by_tag_search.HIDDEN_FILTERING.FILTER
+        )
+    except IndexError:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id, text="not found any images by your query"
+        )
+    if len(raw_content_list) == 0:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id, text="not found any images by your query"
+        )
+
+    image_file, text_response = get_image(context, update, raw_content_list, medialib_connection)
+
+    medialib_connection.close()
+
+    if image_file is not None:
+        try:
+            spoilered = True
+            if update.effective_chat.type == telegram.constants.ChatType.PRIVATE:
+                spoilered = False
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id,
+                photo=image_file,
+                caption="\n".join(text_response),
+                has_spoiler=spoilered
+            )
+        except telegram.error.BadRequest:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="\n".join(text_response))
+    else:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="\n".join(text_response))
+
+
 async def tag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     medialib_connection = medialib_db.common.make_connection()
-    user_data = medialib_db.register_user_and_get_info(
-        update.effective_user.id, "telegram", medialib_connection, username=update.effective_user.username
-    )
-    if user_data[3] == "ban":
+    permission_level = get_permission_level(update, medialib_connection)
+    if permission_level == "ban":
         await context.bot.send_message(chat_id=update.effective_chat.id, text="you are not allowed to do this request")
         medialib_connection.close()
         return
@@ -234,7 +430,7 @@ async def tag(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="Sorry, I didn't understand that command.")
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=UNKNOWN_COMMAND_TEXT_RESPONSE)
 
 
 if __name__ == '__main__':
@@ -244,6 +440,9 @@ if __name__ == '__main__':
     help_handler = CommandHandler('help', start)
     echo_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), default_answer)
     safe_handler = CommandHandler('safe', safe)
+    suggestive_handler = CommandHandler('suggestive', suggestive)
+    nsfw_handler = CommandHandler('nsfw', nsfw)
+    explicit_handler = CommandHandler('explicit', explicit)
     tag_handler = CommandHandler('tag', tag)
     unknown_handler = MessageHandler(filters.COMMAND, unknown)
 
@@ -251,6 +450,9 @@ if __name__ == '__main__':
     application.add_handler(help_handler)
     application.add_handler(echo_handler)
     application.add_handler(safe_handler)
+    application.add_handler(suggestive_handler)
+    application.add_handler(nsfw_handler)
+    application.add_handler(explicit_handler)
     application.add_handler(tag_handler)
     application.add_handler(unknown_handler)
 
