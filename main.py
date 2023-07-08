@@ -1,6 +1,10 @@
 import io
 import logging
 import pathlib
+import time
+
+import telegram.error
+
 import pyimglib
 
 from telegram import Update
@@ -19,12 +23,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response = (
         "Welcome to @mfg637's personal media library.\n"
         "Type /safe to get random SFW image.\n"
+        "Type /tag `tag_wildcard` to search the tag\n"
         "Other commands is not supported."
     )
     await context.bot.send_message(chat_id=update.effective_chat.id, text=response)
 
 async def default_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_chat.id, text="I'm not a chatbot!")
+
+def query_parser(query:str):
+    tag_groups = []
+    query_worlds = query.split(" ")
+    current_group = {"not": False, "tags": [""], "count": 0}
+    for word in query_worlds:
+        if word in {"and", "AND"}:
+            if current_group["count"] > 0:
+                tag_groups.append(current_group)
+                current_group = {"not": False, "tags": [""], "count": 0}
+        elif word in {"not", "NOT"}:
+            current_group["not"] = True
+        else:
+            tag_name = word.replace("_", " ")
+            current_group["tags"].append(tag_name)
+            current_group["count"] += 1
+    if current_group["count"] > 0:
+        tag_groups.append(current_group)
+    return tag_groups
+
 
 async def safe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ORIGIN_URL_TEMPLATE = {
@@ -37,6 +62,9 @@ async def safe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     tags_groups = [{"not": False, "tags": ["safe"], "count": 1}]
+    query_string = update.message.text[6:]
+    tags_groups.extend(query_parser(query_string))
+    print("tags_groups", tags_groups)
     raw_content_list = medialib_db.files_by_tag_search.get_media_by_tags(
         *tags_groups,
         limit=1,
@@ -44,6 +72,10 @@ async def safe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         order_by=medialib_db.files_by_tag_search.ORDERING_BY.RANDOM,
         filter_hidden=medialib_db.files_by_tag_search.HIDDEN_FILTERING.FILTER
     )
+    if len(raw_content_list) == 0:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id, text="not founded any images by your query"
+        )
     medialib_connection = medialib_db.common.make_connection()
     content_id = raw_content_list[0][0]
     content_metadata = medialib_db.get_content_metadata_by_content_id(content_id, medialib_connection)
@@ -124,11 +156,48 @@ async def safe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     medialib_connection.close()
 
     if image_file is not None:
-        await context.bot.send_photo(
-            chat_id=update.effective_chat.id, photo=image_file, caption="\n".join(text_response)
-        )
+        try:
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id, photo=image_file, caption="\n".join(text_response)
+            )
+        except telegram.error.BadRequest:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="\n".join(text_response))
     else:
         await context.bot.send_message(chat_id=update.effective_chat.id, text="\n".join(text_response))
+
+
+async def tag(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    medialib_connection = medialib_db.common.make_connection()
+    query_string = update.message.text[5:]
+    response_lines = []
+    if '*' in query_string:
+        tag_aliases = medialib_db.tags_indexer.wildcard_tag_search(query_string, medialib_connection)
+        for tag_alias in tag_aliases:
+            tag_info = medialib_db.tags_indexer.get_tag_info_by_tag_id(tag_alias[0], medialib_connection)
+            response_lines.append(
+                "{} → id{}: {} ({})".format(tag_alias[1], tag_info[0], tag_info[1], tag_info[2])
+            )
+        if len(tag_aliases) == 0:
+            response_lines.append("not founded")
+    else:
+        response_lines.append("not implemented")
+    medialib_connection.close()
+    i = 0
+    while i < len(response_lines):
+        send_response = response_lines[i:(i + 10)]
+        if i == 0 and len(response_lines) > 10:
+            send_response.insert(0, "There are long list. Please, wait until all contents will be send.")
+        if len(send_response) > 0:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, text="\n".join(send_response)
+            )
+        time.sleep(2)
+        i += 10
+    if len(response_lines) > 10:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id, text="END"
+        )
+
 
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_chat.id, text="Sorry, I didn't understand that command.")
@@ -140,11 +209,13 @@ if __name__ == '__main__':
     start_handler = CommandHandler('start', start)
     echo_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), default_answer)
     safe_handler = CommandHandler('safe', safe)
+    tag_handler = CommandHandler('tag', tag)
     unknown_handler = MessageHandler(filters.COMMAND, unknown)
 
     application.add_handler(start_handler)
     application.add_handler(echo_handler)
     application.add_handler(safe_handler)
+    application.add_handler(tag_handler)
     application.add_handler(unknown_handler)
 
     application.run_polling()
