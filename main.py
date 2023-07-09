@@ -1,3 +1,4 @@
+import enum
 import io
 import logging
 import time
@@ -57,6 +58,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if permission_level >= medialib_db.ACCESS_LEVEL.NSFW:
                 response_lines.append("Type /nsfw to get some NSFW image.")
                 response_lines.append("Type /explicit to get explicit rated image.")
+        response_lines.append("Type /best `POST_ID` to get best available image.")
+        response_lines.append("Type /webp `POST_ID` to get WEBP image if available.")
         response_lines.append("Other commands is not supported.")
     else:
         response_lines.append("You are banned. Have a nice day.")
@@ -88,7 +91,7 @@ def query_parser(query:str):
     return tag_groups
 
 def filter_pride_tags():
-    ORIENTATION_WORDS = ["bisexual", "gay", "futa", "intersex", "lesbian", "transgender"]
+    ORIENTATION_WORDS = ["bisexual", "gay", "futa", "intersex", "lesbian", "transgender", "solo male"]
     pride_tags = []
     for orientation in ORIENTATION_WORDS:
         pride_tags.append({"not": True, "tags": [orientation], "count": 1})
@@ -109,7 +112,7 @@ ORIGIN_URL_TEMPLATE = {
     "furaffinity": "https://www.furaffinity.net/view/{}/"
 }
 
-def get_image(context, update, raw_content_list, medialib_connection):
+def get_image(context, update, raw_content_list, medialib_connection, post_id):
     content_id = raw_content_list[0][0]
     content_metadata = medialib_db.get_content_metadata_by_content_id(content_id, medialib_connection)
 
@@ -185,7 +188,7 @@ def get_image(context, update, raw_content_list, medialib_connection):
     if type(image_file) is bytes and len(image_file) == 0:
         image_file = None
 
-    text_response.append("Medialib ID: {}".format(content_id))
+    text_response.append("Post ID: {}".format(post_id))
 
     return image_file, text_response
 
@@ -219,8 +222,8 @@ async def safe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=update.effective_chat.id, text="not found any images by your query"
         )
-
-    image_file, text_response = get_image(context, update, raw_content_list, medialib_connection)
+    post_id = medialib_db.register_post(user_data.id, raw_content_list[0][0], medialib_connection)
+    image_file, text_response = get_image(context, update, raw_content_list, medialib_connection, post_id)
 
     medialib_connection.close()
 
@@ -269,7 +272,8 @@ async def suggestive(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=update.effective_chat.id, text="not found any images by your query"
         )
 
-    image_file, text_response = get_image(context, update, raw_content_list, medialib_connection)
+    post_id = medialib_db.register_post(user_data.id, raw_content_list[0][0], medialib_connection)
+    image_file, text_response = get_image(context, update, raw_content_list, medialib_connection, post_id)
 
     medialib_connection.close()
 
@@ -324,7 +328,8 @@ async def nsfw(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=update.effective_chat.id, text="not found any images by your query"
         )
 
-    image_file, text_response = get_image(context, update, raw_content_list, medialib_connection)
+    post_id = medialib_db.register_post(user_data.id, raw_content_list[0][0], medialib_connection)
+    image_file, text_response = get_image(context, update, raw_content_list, medialib_connection, post_id)
 
     medialib_connection.close()
 
@@ -379,7 +384,8 @@ async def explicit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=update.effective_chat.id, text="not found any images by your query"
         )
 
-    image_file, text_response = get_image(context, update, raw_content_list, medialib_connection)
+    post_id = medialib_db.register_post(user_data.id, raw_content_list[0][0], medialib_connection)
+    image_file, text_response = get_image(context, update, raw_content_list, medialib_connection, post_id)
 
     medialib_connection.close()
 
@@ -439,6 +445,87 @@ async def tag(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=update.effective_chat.id, text="END"
         )
 
+class UPLOAD_TYPE(enum.Enum):
+    BEST = enum.auto()
+    WEBP = enum.auto()
+
+async def file_uploader(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("BEST HANDLER")
+    query = update.message.text.split(" ", 1)
+    query_string = ''
+    if len(query) == 2:
+        query_string = query[1]
+    post_id = None
+    mode = None
+    if "best" in query[0]:
+        mode = UPLOAD_TYPE.BEST
+    elif "webp" in query[0]:
+        mode = UPLOAD_TYPE.WEBP
+    else:
+        raise NotImplemented(query[0])
+    try:
+        post_id = int(query_string)
+    except:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id, text="Invalid Post ID."
+        )
+        return
+    medialib_connection = medialib_db.common.make_connection()
+    user_data = get_user_data(update, medialib_connection)
+    if user_data.access_level == medialib_db.ACCESS_LEVEL.BAN:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="you are not allowed to do this request")
+        medialib_connection.close()
+        return
+    post_data = medialib_db.get_post(post_id, medialib_connection)
+    if post_data is None:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id, text="Post not found."
+        )
+        medialib_connection.close()
+        return
+    if post_data[1] != user_data.id:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id, text="That post is not yours."
+        )
+        medialib_connection.close()
+        return
+
+    content_id = post_data[2]
+    content_metadata = medialib_db.get_content_metadata_by_content_id(content_id, medialib_connection)
+
+    file_path = medialib_db.config.relative_to.joinpath(content_metadata[1])
+
+    if file_path.suffix == ".srs":
+        representations = medialib_db.get_representation_by_content_id(content_id, medialib_connection)
+        if len(representations):
+            if mode == UPLOAD_TYPE.BEST:
+                file_path = representations[0].file_path
+            elif mode == UPLOAD_TYPE.WEBP:
+                webp_source = None
+                for representation in representations:
+                    if representation.format == "webp":
+                        webp_source = representation.file_path
+                file_path = webp_source
+    elif mode == UPLOAD_TYPE.WEBP:
+        if file_path.suffix != ".webp":
+            file_path = None
+    medialib_connection.close()
+
+    if file_path is not None:
+        if file_path.suffix == ".mpd":
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, text="Sorry. Cannot post this file."
+            )
+            return
+
+        await context.bot.send_document(
+            chat_id=update.effective_chat.id, document=file_path
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id, text="File not found."
+        )
+
 
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_chat.id, text=UNKNOWN_COMMAND_TEXT_RESPONSE)
@@ -455,6 +542,8 @@ if __name__ == '__main__':
     nsfw_handler = CommandHandler('nsfw', nsfw)
     explicit_handler = CommandHandler('explicit', explicit)
     tag_handler = CommandHandler('tag', tag)
+    best_handler = CommandHandler('best', file_uploader)
+    webp_handler = CommandHandler('webp', file_uploader)
     unknown_handler = MessageHandler(filters.COMMAND, unknown)
 
     application.add_handler(start_handler)
@@ -465,6 +554,8 @@ if __name__ == '__main__':
     application.add_handler(nsfw_handler)
     application.add_handler(explicit_handler)
     application.add_handler(tag_handler)
+    application.add_handler(best_handler)
+    application.add_handler(webp_handler)
     application.add_handler(unknown_handler)
 
     application.run_polling()
