@@ -1,6 +1,5 @@
 import io
 import logging
-import pathlib
 import time
 
 import telegram.error
@@ -20,34 +19,44 @@ logging.basicConfig(
 
 UNKNOWN_COMMAND_TEXT_RESPONSE = "Sorry, I didn't understand that command."
 
-def get_permission_level(update, connection):
-    user_data = medialib_db.register_user_and_get_info(
+def get_user_data(update, connection) -> medialib_db.User:
+    return medialib_db.register_user_and_get_info(
         update.effective_user.id, "telegram", connection, username=update.effective_user.username
     )
-    permission_level = user_data[5]
+
+def get_query_from_text(text: str):
+    query_data = text.split(" ", 1)
+    if len(query_data) == 2:
+        return query_data[1]
+    else:
+        return ''
+
+def get_permission_level(update, connection, user_data):
+    permission_level = user_data.access_level
     if update.effective_chat.type != telegram.constants.ChatType.PRIVATE:
-        chat_data = medialib_db.register_channel_and_get_info(
+        chat_data: medialib_db.TGChat = medialib_db.register_channel_and_get_info(
             update.effective_chat.id, update.effective_chat.title, connection
         )
-        permission_level = chat_data[2]
+        permission_level = chat_data.access_level
     return permission_level
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     medialib_connection = medialib_db.common.make_connection()
-    permission_level = get_permission_level(update, medialib_connection)
+    user_data = get_user_data(update, medialib_connection)
+    permission_level = get_permission_level(update, medialib_connection, user_data)
     medialib_connection.close()
     print("effective_chat", update.effective_chat)
     print("effective_user", update.effective_user)
     response_lines = []
-    if permission_level != "ban":
+    if permission_level > medialib_db.ACCESS_LEVEL.BAN:
         response_lines.append("Welcome to @mfg637's personal media library.")
         response_lines.append("Type /safe to get random SFW image.")
         response_lines.append("Type /tag `tag_wildcard` to search the tag")
-        if permission_level in {'suggestive', 'nsfw', 'gay', 'ultimate'}:
+        if permission_level >= medialib_db.ACCESS_LEVEL.SUGGESTIVE:
             response_lines.append("Type /suggestive to get suggestive image.")
-        if permission_level in {'nsfw', 'gay', 'ultimate'}:
-            response_lines.append("Type /nsfw to get some NSFW image.")
-            response_lines.append("Type /explicit to get explicit rated image.")
+            if permission_level >= medialib_db.ACCESS_LEVEL.NSFW:
+                response_lines.append("Type /nsfw to get some NSFW image.")
+                response_lines.append("Type /explicit to get explicit rated image.")
         response_lines.append("Other commands is not supported.")
     else:
         response_lines.append("You are banned. Have a nice day.")
@@ -182,14 +191,15 @@ def get_image(context, update, raw_content_list, medialib_connection):
 
 async def safe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     medialib_connection = medialib_db.common.make_connection()
-    permission_level = get_permission_level(update, medialib_connection)
-    if permission_level == "ban":
+    user_data = get_user_data(update, medialib_connection)
+    permission_level = get_permission_level(update, medialib_connection, user_data)
+    if permission_level == medialib_db.ACCESS_LEVEL.BAN:
         await context.bot.send_message(chat_id=update.effective_chat.id, text="you are not allowed to do this request")
         medialib_connection.close()
         return
 
     tags_groups = [{"not": False, "tags": ["safe"], "count": 1}]
-    query_string = update.message.text[6:]
+    query_string = get_query_from_text(update.message.text)
     tags_groups.extend(query_parser(query_string))
     print("tags_groups", tags_groups)
 
@@ -227,18 +237,18 @@ async def safe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def suggestive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     medialib_connection = medialib_db.common.make_connection()
-    permission_level = get_permission_level(update, medialib_connection)
-    print("permission level", permission_level)
-    if permission_level not in {'suggestive', 'nsfw', 'gay', 'ultimate'}:
+    user_data = get_user_data(update, medialib_connection)
+    permission_level = get_permission_level(update, medialib_connection, user_data)
+    if permission_level < medialib_db.ACCESS_LEVEL.SUGGESTIVE:
         await context.bot.send_message(chat_id=update.effective_chat.id, text=UNKNOWN_COMMAND_TEXT_RESPONSE)
         medialib_connection.close()
         return
 
     tags_groups = [{"not": False, "tags": ["suggestive"], "count": 1}]
     tags_groups.extend(filter_bad_tags())
-    if permission_level not in {'ultimate', 'gay'}:
+    if permission_level >= medialib_db.ACCESS_LEVEL.GAY:
         tags_groups.extend(filter_pride_tags())
-    query_string = update.message.text[12:]
+    query_string = get_query_from_text(update.message.text)
     tags_groups.extend(query_parser(query_string))
     print("tags_groups", tags_groups)
 
@@ -282,18 +292,18 @@ async def suggestive(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def nsfw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     medialib_connection = medialib_db.common.make_connection()
-    permission_level = get_permission_level(update, medialib_connection)
-    print("permission level", permission_level)
-    if permission_level not in {'nsfw', 'gay', 'ultimate'}:
+    user_data = get_user_data(update, medialib_connection)
+    permission_level = get_permission_level(update, medialib_connection, user_data)
+    if permission_level < medialib_db.ACCESS_LEVEL.NSFW:
         await context.bot.send_message(chat_id=update.effective_chat.id, text=UNKNOWN_COMMAND_TEXT_RESPONSE)
         medialib_connection.close()
         return
 
     tags_groups = [{"not": True, "tags": ["safe"], "count": 1}]
     tags_groups.extend(filter_bad_tags())
-    if permission_level not in {'ultimate', 'gay'}:
+    if permission_level >= medialib_db.ACCESS_LEVEL.GAY:
         tags_groups.extend(filter_pride_tags())
-    query_string = update.message.text[6:]
+    query_string = get_query_from_text(update.message.text)
     tags_groups.extend(query_parser(query_string))
     print("tags_groups", tags_groups)
 
@@ -337,18 +347,18 @@ async def nsfw(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def explicit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     medialib_connection = medialib_db.common.make_connection()
-    permission_level = get_permission_level(update, medialib_connection)
-    print("permission level", permission_level)
-    if permission_level not in {'nsfw', 'gay', 'ultimate'}:
+    user_data = get_user_data(update, medialib_connection)
+    permission_level = get_permission_level(update, medialib_connection, user_data)
+    if permission_level < medialib_db.ACCESS_LEVEL.NSFW:
         await context.bot.send_message(chat_id=update.effective_chat.id, text=UNKNOWN_COMMAND_TEXT_RESPONSE)
         medialib_connection.close()
         return
 
     tags_groups = [{"not": False, "tags": ["explicit"], "count": 1}]
     tags_groups.extend(filter_bad_tags())
-    if permission_level not in {'ultimate', 'gay'}:
+    if permission_level >= medialib_db.ACCESS_LEVEL.GAY:
         tags_groups.extend(filter_pride_tags())
-    query_string = update.message.text[10:]
+    query_string = get_query_from_text(update.message.text)
     tags_groups.extend(query_parser(query_string))
     print("tags_groups", tags_groups)
 
@@ -392,13 +402,14 @@ async def explicit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def tag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     medialib_connection = medialib_db.common.make_connection()
-    permission_level = get_permission_level(update, medialib_connection)
-    if permission_level == "ban":
+    user_data = get_user_data(update, medialib_connection)
+    permission_level = get_permission_level(update, medialib_connection, user_data)
+    if permission_level == medialib_db.ACCESS_LEVEL.BAN:
         await context.bot.send_message(chat_id=update.effective_chat.id, text="you are not allowed to do this request")
         medialib_connection.close()
         return
 
-    query_string = update.message.text[5:]
+    query_string = get_query_from_text(update.message.text)
     response_lines = []
     if '*' in query_string:
         tag_aliases = medialib_db.tags_indexer.wildcard_tag_search(query_string, medialib_connection)
