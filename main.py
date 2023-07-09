@@ -24,7 +24,7 @@ def get_permission_level(update, connection):
     user_data = medialib_db.register_user_and_get_info(
         update.effective_user.id, "telegram", connection, username=update.effective_user.username
     )
-    permission_level = user_data[3]
+    permission_level = user_data[5]
     if update.effective_chat.type != telegram.constants.ChatType.PRIVATE:
         chat_data = medialib_db.register_channel_and_get_info(
             update.effective_chat.id, update.effective_chat.title, connection
